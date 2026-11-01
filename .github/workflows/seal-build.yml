@@ -1,0 +1,67 @@
+name: seal-build
+
+# Build-and-pack only: the test suite runs on Travis (.travis.yml).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        run: |
+          mkdir -p "$RUNNER_TEMP/gopath/src/github.com/Masterminds"
+          cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/gopath/src/github.com/Masterminds/goutils"
+          cd "$RUNNER_TEMP/gopath/src/github.com/Masterminds/goutils"
+          GOPATH="$RUNNER_TEMP/gopath" GO111MODULE=off go build -v .
+
+      - name: Pack module zip
+        run: |
+          # Zip a copy of the tree without .git and this seal-only workflow,
+          # so the module zip keeps the public member set.
+          mkdir -p "$RUNNER_TEMP/modsrc" "$RUNNER_TEMP/helper" build_output
+          cp -a "$GITHUB_WORKSPACE/." "$RUNNER_TEMP/modsrc/"
+          rm -rf "$RUNNER_TEMP/modsrc/.git" "$RUNNER_TEMP/modsrc/build_output"
+          rm -f "$RUNNER_TEMP/modsrc/.github/workflows/seal-build.yml"
+          rmdir -p "$RUNNER_TEMP/modsrc/.github/workflows" 2>/dev/null || :
+          cd "$RUNNER_TEMP/helper"
+          cat > create_mod.go <<'EOF'
+          package main
+
+          import (
+                  "log"
+                  "os"
+
+                  "golang.org/x/mod/module"
+                  "golang.org/x/mod/zip"
+          )
+
+          func main() {
+                  m := module.Version{Path: os.Args[1], Version: os.Args[2]}
+                  f, err := os.Create(os.Args[4])
+                  if err != nil {
+                      log.Fatal(err)
+                  }
+                  defer f.Close()
+                  if err := zip.CreateFromDir(f, m, os.Args[3]); err != nil {
+                      log.Fatal(err)
+                  }
+                  log.Printf("created module zip: %s", os.Args[4])
+          }
+          EOF
+          go mod init example.com/helper
+          go get golang.org/x/mod@v0.14.0
+          go run create_mod.go github.com/Masterminds/goutils v1.1.0 "$RUNNER_TEMP/modsrc" "$GITHUB_WORKSPACE/build_output/v1.1.0.zip"
+          unzip -l "$GITHUB_WORKSPACE/build_output/v1.1.0.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: build_output/v1.1.0.zip
